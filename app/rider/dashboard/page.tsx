@@ -40,11 +40,18 @@ export default function RiderDashboard() {
               Welcome back, {user?.name?.split(" ")[0] || "Rider"}! Book a ride or check your history.
             </p>
           </div>
-          <Link href="/rider/book">
-            <Button className="bg-indigo-600 hover:bg-indigo-700">
-              <Car className="mr-2 h-4 w-4" /> Book a Ride
-            </Button>
-          </Link>
+          <div className="flex gap-2">
+            <Link href="/rider/security">
+              <Button variant="outline" className="border-indigo-200">
+                <Shield className="mr-2 h-4 w-4 text-indigo-600" /> View Security
+              </Button>
+            </Link>
+            <Link href="/rider/book">
+              <Button className="bg-indigo-600 hover:bg-indigo-700">
+                <Car className="mr-2 h-4 w-4" /> Book a Ride
+              </Button>
+            </Link>
+          </div>
         </div>
 
         <div className="mb-2">
@@ -128,6 +135,17 @@ export default function RiderDashboard() {
                 <CardDescription>Configure your safety preferences and emergency contacts</CardDescription>
               </CardHeader>
               <CardContent>
+                <div className="mb-4">
+                  <Link href="/rider/security">
+                    <Button className="w-full bg-indigo-600 hover:bg-indigo-700">
+                      <Shield className="mr-2 h-4 w-4" /> 
+                      View Enhanced Security Options
+                    </Button>
+                  </Link>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Access advanced AI-powered security features and additional safety options
+                  </p>
+                </div>
                 <SafetyAssistant />
               </CardContent>
             </Card>

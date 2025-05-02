@@ -1,538 +1,601 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import React, { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Progress } from "@/components/ui/progress"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { RiderLayout } from "@/components/layouts/rider-layout"
-import { EnhancedMap } from "@/components/interactive-map/enhanced-map"
-import { ARView } from "@/components/ar-navigation/ar-view"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
-import { Progress } from "@/components/ui/progress"
-import { Separator } from "@/components/ui/separator"
-import { Car, Leaf, MessageSquare, Phone, Shield, Star, Users } from "lucide-react"
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { useRouter } from "next/navigation"
+import { Star, Car, CreditCard, Phone, MessageSquare, MapPin, Navigation, Clock, Share2, AlertTriangle, Zap, MapIcon, Info, Umbrella } from "lucide-react"
 import { useAppContext } from "@/contexts/app-context"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { SafetyAssistant } from "@/components/safety-assistant"
+import type { RideType, Location, Driver } from "@/contexts/app-context"
+import { estimateRoute, RouteEstimate, getRouteInsights, RouteInsights, WeatherInsight, getWeatherInsights } from "@/lib/gemini-service"
 import { toast } from "sonner"
-import { Location } from "@/lib/types"
+import { RideAnalyticsCard } from "@/components/ride-tracking/ride-analytics-card"
 
-// Ride status steps
-const rideSteps = [
-  { id: 1, label: "Driver Assigned", status: "accepted" },
-  { id: 2, label: "Driver En Route", status: "arriving" },
-  { id: 3, label: "Arrived at Pickup", status: "arriving" },
-  { id: 4, label: "Trip in Progress", status: "in_progress" },
-  { id: 5, label: "Completed", status: "completed" },
-]
+interface RideDetails {
+  id: string;
+  from: Location;
+  to: Location;
+  price: number;
+  date: string;
+  status: string;
+  driver: Driver;
+  rideType: RideType;
+  carbonFootprint: number;
+  carbonSaved: number;
+  route: {
+    distance: string;
+    duration: string;
+  };
+  paymentMethod: string;
+  routeInfo?: RouteEstimate;
+}
 
-export default function RideTrackingPage() {
+export default function TrackingPage() {
   const router = useRouter()
-  const { currentRide, updateRideStatus, completeRide } = useAppContext()
-  const [currentStep, setCurrentStep] = useState(1)
-  const [eta, setEta] = useState(4) // minutes
-  const [progress, setProgress] = useState(20)
+  const { getCurrentRide } = useAppContext()
+
+  // Ride progress states
+  const [progress, setProgress] = useState(10)
+  const [rideStatus, setRideStatus] = useState<"arriving" | "pickedup" | "enroute" | "completed">("arriving")
   const [activeTab, setActiveTab] = useState("status")
-  const [showARView, setShowARView] = useState(false)
-  const [isRideInProgress, setIsRideInProgress] = useState(false)
-  const [remainingTime, setRemainingTime] = useState(0)
-  const [driverPosition, setDriverPosition] = useState<Location>({ lat: 37.7749, lng: -122.4194 })
+  
+  // Ride details from session storage or context
+  const [rideDetails, setRideDetails] = useState<RideDetails | null>(null)
+  
+  // AI insights
+  const [routeInsights, setRouteInsights] = useState<RouteInsights | null>(null)
+  const [weatherInsights, setWeatherInsights] = useState<WeatherInsight | null>(null)
+  const [isLoadingInsights, setIsLoadingInsights] = useState(false)
 
-  // Add these state variables for tracking timeouts and intervals
-  const progressTimerRef = useRef<NodeJS.Timeout | null>(null)
-  const etaUpdateRef = useRef<NodeJS.Timeout | null>(null)
-  const driverMovementRef = useRef<NodeJS.Timeout | null>(null)
-
-  // Define shorter durations for quick demo
-  const STEP_DURATIONS = {
-    "Driver En Route": 5000,  // 5 seconds for driver to arrive
-    "Driver Arrived": 3000,   // 3 seconds at pickup
-    "In Progress": 7000,      // 7 seconds for the trip
-  }
-
-  // Clear all timers on unmount
+  // Initialize ride details from session storage or context
   useEffect(() => {
-    return () => {
-      if (progressTimerRef.current) clearTimeout(progressTimerRef.current)
-      if (etaUpdateRef.current) clearInterval(etaUpdateRef.current)
-      if (driverMovementRef.current) clearInterval(driverMovementRef.current)
-    }
-  }, [])
-
-  // Helper function to set the current ride
-  const setCurrentRide = (ride: any) => {
-    if (updateRideStatus) {
-      updateRideStatus(ride)
-    }
-  }
-
-  // Initialize ride when component mounts
-  useEffect(() => {
-    if (!currentRide) {
-      router.push("/rider/book")
-      return
-    }
-    
-    // Set initial step based on ride status
-    const initialStatus = currentRide.status
-    console.log("Initial ride status:", initialStatus)
-    
-    // Set appropriate step and progress based on status
-    if (initialStatus === "confirmed") {
-      setCurrentStep(1)
-      setProgress(20)
-      progressToNextStep("Driver En Route")
-    } else if (initialStatus === "Driver En Route") {
-      setCurrentStep(2)
-      setProgress(40)
-      progressToNextStep("Driver Arrived")
-    } else if (initialStatus === "Driver Arrived") {
-      setCurrentStep(3)
-      setProgress(60)
-      progressToNextStep("In Progress")
-    } else if (initialStatus === "In Progress") {
-      setCurrentStep(4)
-      setProgress(80)
-      progressToNextStep("Completed")
-    }
-    
-    toast.success("Your ride is now being tracked in real-time")
-  }, [currentRide, router])
-
-  // Function to update ride status and progress to next step
-  const progressToNextStep = (nextStatus: string) => {
-    console.log(`Progressing to ${nextStatus}`)
-    
-    // Clear any existing timer
-    if (progressTimerRef.current) {
-      clearTimeout(progressTimerRef.current)
-    }
-    
-    // Update the current ride status immediately
-    if (currentRide) {
-      const updatedRide = {
-        ...currentRide,
-        status: nextStatus
+    // Try to get ride details from session storage first
+    try {
+      const storedRide = sessionStorage.getItem('currentRide');
+      if (storedRide) {
+        const parsedRide = JSON.parse(storedRide);
+        setRideDetails(parsedRide);
+        console.log("Loaded ride details from session storage:", parsedRide);
+        return;
       }
-      setCurrentRide(updatedRide)
-      localStorage.setItem("currentRide", JSON.stringify(updatedRide))
+    } catch (e) {
+      console.error("Error reading from session storage:", e);
     }
     
-    // Set up timer for next status update
-    if (nextStatus === "Driver En Route") {
-      setEta(Math.floor(STEP_DURATIONS["Driver En Route"] / 1000))
-      startEtaCountdown()
-      
-      progressTimerRef.current = setTimeout(() => {
-        progressToNextStep("Driver Arrived")
-      }, STEP_DURATIONS["Driver En Route"])
-    } 
-    else if (nextStatus === "Driver Arrived") {
-      setCurrentStep(3)
-      setProgress(60)
-      toast.success("Your driver has arrived! Please meet them at the pickup location.")
-      
-      progressTimerRef.current = setTimeout(() => {
-        progressToNextStep("In Progress")
-      }, STEP_DURATIONS["Driver Arrived"])
-    } 
-    else if (nextStatus === "In Progress") {
-      setCurrentStep(4)
-      setProgress(80)
-      setIsRideInProgress(true)
-      setRemainingTime(Math.floor(STEP_DURATIONS["In Progress"] / 1000))
-      startRideTimer()
-      toast.success("Your ride has started!")
-      
-      progressTimerRef.current = setTimeout(() => {
-        progressToNextStep("Completed")
-      }, STEP_DURATIONS["In Progress"])
-    } 
-    else if (nextStatus === "Completed") {
-      setCurrentStep(5)
-      setProgress(100)
-      setIsRideInProgress(false)
-      toast.success("You have arrived at your destination!")
-      
-      if (completeRide && currentRide) {
-        completeRide(currentRide)
-      }
+    // Fallback to context API
+    const contextRide = getCurrentRide ? getCurrentRide() : null;
+    if (contextRide) {
+      setRideDetails(contextRide as RideDetails);
+      console.log("Loaded ride details from context:", contextRide);
     }
-  }
-
-  // Start ETA countdown timer
-  const startEtaCountdown = () => {
-    if (etaUpdateRef.current) {
-      clearInterval(etaUpdateRef.current)
-    }
-    
-    etaUpdateRef.current = setInterval(() => {
-      setEta((prevEta) => {
-        if (prevEta <= 1) {
-          clearInterval(etaUpdateRef.current!)
-          return 0
-        }
-        return prevEta - 1
-      })
-    }, 1000)
-  }
-
-  // Start ride timer countdown
-  const startRideTimer = () => {
-    if (driverMovementRef.current) {
-      clearInterval(driverMovementRef.current)
-    }
-    
-    driverMovementRef.current = setInterval(() => {
-      setRemainingTime((prevTime) => {
-        if (prevTime <= 1) {
-          clearInterval(driverMovementRef.current!)
-          return 0
-        }
-        return prevTime - 1
-      })
-    }, 1000)
-  }
-
-  // Update the RideStatus component to handle setting driver location for the map
+  }, [getCurrentRide]);
+  
+  // Load insights when ride details are available
   useEffect(() => {
-    // Set driver location based on current step
-    const defaultLocation = { lng: -122.4194, lat: 37.7749 }; // San Francisco
-    const pickupLocation = currentRide?.pickup || defaultLocation;
-    const destinationLocation = currentRide?.destination || defaultLocation;
+    if (rideDetails?.from && rideDetails?.to) {
+      loadInsights();
+    }
+  }, [rideDetails]);
+
+  // Simulate ride progress
+  useEffect(() => {
+    // Only start the simulation if we have ride details
+    if (!rideDetails) return;
     
-    let driverLocation;
+    const timer = setTimeout(() => {
+      if (progress < 33) {
+        setProgress((prev) => Math.min(prev + 5, 33))
+      } else if (progress >= 33 && progress < 66) {
+        setRideStatus("pickedup")
+        setProgress((prev) => Math.min(prev + 5, 66))
+      } else if (progress >= 66 && progress < 100) {
+        setRideStatus("enroute")
+        setProgress((prev) => Math.min(prev + 5, 100))
+      } else if (progress === 100 && rideStatus !== "completed") {
+        setRideStatus("completed")
+        toast.success("You have reached your destination!")
+      }
+    }, 1000)
+
+    return () => clearTimeout(timer)
+  }, [progress, rideStatus, rideDetails])
+
+  // Load route and weather insights
+  const loadInsights = async () => {
+    if (!rideDetails?.from || !rideDetails?.to) return;
     
-    if (currentStep === 1) {
-      // Driver assigned - start at a random position near pickup
-      driverLocation = {
-        lng: (typeof pickupLocation === 'string' ? defaultLocation.lng : pickupLocation.lng) - 0.005 - Math.random() * 0.005,
-        lat: (typeof pickupLocation === 'string' ? defaultLocation.lat : pickupLocation.lat) - 0.005 - Math.random() * 0.005
-      };
-    } else if (currentStep === 2) {
-      // Driver en route - closer to pickup
-      driverLocation = {
-        lng: (typeof pickupLocation === 'string' ? defaultLocation.lng : pickupLocation.lng) - 0.002 - Math.random() * 0.001,
-        lat: (typeof pickupLocation === 'string' ? defaultLocation.lat : pickupLocation.lat) - 0.002 - Math.random() * 0.001
-      };
-    } else if (currentStep === 3) {
-      // Driver arrived at pickup
-      driverLocation = {
-        lng: typeof pickupLocation === 'string' ? defaultLocation.lng : pickupLocation.lng,
-        lat: typeof pickupLocation === 'string' ? defaultLocation.lat : pickupLocation.lat
-      };
-    } else if (currentStep === 4) {
-      // Trip in progress - somewhere between pickup and destination
-      const pickupLng = typeof pickupLocation === 'string' ? defaultLocation.lng : pickupLocation.lng;
-      const pickupLat = typeof pickupLocation === 'string' ? defaultLocation.lat : pickupLocation.lat;
-      const destLng = typeof destinationLocation === 'string' ? defaultLocation.lng : destinationLocation.lng;
-      const destLat = typeof destinationLocation === 'string' ? defaultLocation.lat : destinationLocation.lat;
+    setIsLoadingInsights(true);
+    
+    try {
+      // Load insights in parallel
+      const [routeData, weatherData] = await Promise.all([
+        getRouteInsights(rideDetails.from, rideDetails.to),
+        getWeatherInsights(rideDetails.from, rideDetails.to)
+      ]);
       
-      // Calculate progress (0-1) based on current progress value
-      const progressFraction = progress / 100;
-      
-      driverLocation = {
-        lng: pickupLng + (destLng - pickupLng) * progressFraction,
-        lat: pickupLat + (destLat - pickupLat) * progressFraction
-      };
+      setRouteInsights(routeData);
+      setWeatherInsights(weatherData);
+    } catch (error) {
+      console.error("Error loading insights:", error);
+    } finally {
+      setIsLoadingInsights(false);
+    }
+  };
+
+  // Generate driver ETA text based on progress
+  const getDriverEta = () => {
+    if (progress < 33) {
+      return `${Math.ceil((33 - progress) / 5)} minutes away`;
+    } else if (progress >= 33 && progress < 66) {
+      return "Driver has arrived";
+    } else if (progress >= 66 && progress < 100) {
+      return `${Math.ceil((100 - progress) / 5)} minutes to destination`;
     } else {
-      // Completed - at destination
-      driverLocation = {
-        lng: typeof destinationLocation === 'string' ? defaultLocation.lng : destinationLocation.lng,
-        lat: typeof destinationLocation === 'string' ? defaultLocation.lat : destinationLocation.lat
-      };
+      return "Arrived at destination";
     }
-    
-    setDriverPosition(driverLocation);
-  }, [currentStep, progress, currentRide]);
+  };
 
-  // If no current ride, show loading or redirect
-  if (!currentRide) {
+  if (!rideDetails) {
     return (
       <RiderLayout>
-        <div className="flex justify-center items-center h-[60vh]">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
+        <div className="p-4 max-w-5xl mx-auto">
+          <Card>
+            <CardHeader>
+              <CardTitle>No Active Ride</CardTitle>
+              <CardDescription>You don't have any active rides at the moment</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button onClick={() => router.push("/rider/book")}>Book a Ride</Button>
+            </CardContent>
+          </Card>
         </div>
       </RiderLayout>
-    )
+    );
   }
 
   return (
     <RiderLayout>
-      <div className="flex flex-col gap-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Ride in Progress</h1>
-          <p className="text-muted-foreground">Track your ride in real-time</p>
+      <div className="p-4 max-w-5xl mx-auto">
+        <div className="mb-6">
+          <h1 className="text-3xl font-bold">Track Your Ride</h1>
+          <p className="text-muted-foreground mt-1">Stay updated with your ride progress</p>
         </div>
-
+        
+        {/* Progress Bar */}
+        <Card className="mb-6">
+          <CardContent className="pt-6">
+            <div className="space-y-6">
+              <div>
+                <div className="flex justify-between mb-2 text-sm">
+                  <span>Ride Progress</span>
+                  <span className="font-medium">
+                    {rideStatus === "arriving" && "Driver arriving"}
+                    {rideStatus === "pickedup" && "Picked up"}
+                    {rideStatus === "enroute" && "On the way"}
+                    {rideStatus === "completed" && "Completed"}
+                  </span>
+                </div>
+                <Progress value={progress} className="h-2" />
+              </div>
+              
+              <div className="grid grid-cols-4 text-center text-sm">
+                <div className={`${progress >= 10 ? "text-indigo-600 font-medium" : "text-gray-400"}`}>
+                  Confirmed
+                </div>
+                <div className={`${progress >= 33 ? "text-indigo-600 font-medium" : "text-gray-400"}`}>
+                  Driver Arrived
+                </div>
+                <div className={`${progress >= 66 ? "text-indigo-600 font-medium" : "text-gray-400"}`}>
+                  In Transit
+                </div>
+                <div className={`${progress >= 100 ? "text-indigo-600 font-medium" : "text-gray-400"}`}>
+                  Completed
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Left column */}
           <div className="lg:col-span-1 space-y-6">
-            <Tabs defaultValue="status" onValueChange={setActiveTab}>
-              <TabsList className="grid w-full grid-cols-3">
-                <TabsTrigger value="status">Status</TabsTrigger>
-                <TabsTrigger value="driver">Driver</TabsTrigger>
-                <TabsTrigger value="safety">Safety</TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="status">
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle>Ride Status</CardTitle>
-                    <CardDescription>Current status of your ride</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <Progress value={progress} className="h-2 mb-6" />
-
-                    <div className="space-y-4">
-                      {rideSteps.map((step) => (
-                        <div key={step.id} className="flex items-center gap-3">
-                          <div
-                            className={`rounded-full p-1.5 ${
-                              step.id < currentStep
-                                ? "bg-green-100 text-green-700"
-                                : step.id === currentStep
-                                  ? "bg-indigo-100 text-indigo-700"
-                                  : "bg-gray-100 text-gray-400"
-                            }`}
-                          >
-                            {step.id < currentStep ? (
-                              <svg
-                                xmlns="http://www.w3.org/2000/svg"
-                                width="16"
-                                height="16"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="2"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                className="lucide lucide-check"
-                              >
-                                <path d="M20 6 9 17l-5-5" />
-                              </svg>
-                            ) : (
-                              <span className="flex h-4 w-4 items-center justify-center text-xs font-medium">
-                                {step.id}
-                              </span>
-                            )}
-                          </div>
-                          <span
-                            className={`text-sm ${
-                              step.id < currentStep
-                                ? "text-green-700 font-medium"
-                                : step.id === currentStep
-                                  ? "text-indigo-700 font-medium"
-                                  : "text-gray-500"
-                            }`}
-                          >
-                            {step.label}
-                          </span>
-                          {step.id === currentStep && (
-                            <Badge
-                              variant="outline"
-                              className="ml-auto bg-indigo-50 text-indigo-700 hover:bg-indigo-50"
-                            >
-                              Current
-                            </Badge>
-                          )}
-                        </div>
-                      ))}
+            {/* Driver Card */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-lg flex justify-between items-center">
+                  <span>Your Driver</span>
+                  {rideStatus === "arriving" && (
+                    <Badge className="bg-yellow-100 text-yellow-800">{getDriverEta()}</Badge>
+                  )}
+                  {rideStatus === "completed" && (
+                    <Badge className="bg-green-100 text-green-800">Completed</Badge>
+                  )}
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-start gap-4">
+                  <Avatar className="h-12 w-12 border-2 border-white shadow-sm">
+                    <AvatarImage src={rideDetails.driver.avatar} alt={rideDetails.driver.name} />
+                    <AvatarFallback>{rideDetails.driver.name.charAt(0)}</AvatarFallback>
+                  </Avatar>
+                  
+                  <div className="flex-1">
+                    <div className="flex justify-between items-center">
+                      <h3 className="font-medium">{rideDetails.driver.name}</h3>
+                      <div className="flex items-center">
+                        <Star className="h-4 w-4 fill-amber-400 text-amber-400" />
+                        <span className="text-sm ml-1">{rideDetails.driver.rating}</span>
+                      </div>
                     </div>
-
-                    {currentRide.route && (
-                      <div className="mt-6 space-y-2">
-                        <h3 className="text-sm font-medium">Route Information</h3>
-                        <div className="grid grid-cols-2 gap-2">
-                          <div className="bg-gray-50 p-2 rounded-md">
-                            <p className="text-xs text-muted-foreground">Distance</p>
-                            <p className="font-medium">{currentRide.route.distance}</p>
+                    
+                    <div className="flex items-center text-sm text-gray-500 mt-1 gap-1">
+                      <Car className="h-4 w-4" />
+                      <span>
+                        {rideDetails.driver.car.model} • {rideDetails.driver.car.color} • {rideDetails.driver.car.plate}
+                      </span>
+                    </div>
+                    
+                    {rideDetails.driver.car.isGreen && (
+                      <Badge className="mt-2 bg-green-100 text-green-800 font-normal text-xs">Electric Vehicle</Badge>
+                    )}
+                    
+                    <div className="flex gap-2 mt-4">
+                      <Button size="sm" variant="outline" className="flex-1 gap-1">
+                        <Phone className="h-3 w-3" />
+                        <span>Call</span>
+                      </Button>
+                      <Button size="sm" variant="outline" className="flex-1 gap-1">
+                        <MessageSquare className="h-3 w-3" />
+                        <span>Message</span>
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+            
+            {/* Ride Details */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-lg">Ride Details</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-3">
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5">
+                      <MapPin className="h-5 w-5 text-indigo-600" />
+                    </div>
+                    <div>
+                      <div className="font-medium">From</div>
+                      <div className="text-sm text-gray-500">{rideDetails.from.address}</div>
+                    </div>
+                  </div>
+                  
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5">
+                      <Navigation className="h-5 w-5 text-green-600" />
+                    </div>
+                    <div>
+                      <div className="font-medium">To</div>
+                      <div className="text-sm text-gray-500">{rideDetails.to.address}</div>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-4 pt-2">
+                  <div>
+                    <div className="text-sm text-gray-500">Distance</div>
+                    <div className="font-medium">{rideDetails.route.distance}</div>
+                  </div>
+                  
+                  <div>
+                    <div className="text-sm text-gray-500">Duration</div>
+                    <div className="font-medium">{rideDetails.route.duration}</div>
+                  </div>
+                  
+                  <div>
+                    <div className="text-sm text-gray-500">Ride Type</div>
+                    <div className="font-medium capitalize">{rideDetails.rideType}</div>
+                  </div>
+                  
+                  <div>
+                    <div className="text-sm text-gray-500">Payment</div>
+                    <div className="font-medium capitalize">{rideDetails.paymentMethod}</div>
+                  </div>
+                </div>
+                
+                <div className="border-t pt-3 mt-3">
+                  <div className="flex justify-between items-center">
+                    <span className="font-medium">Total Fare</span>
+                    <span className="font-bold text-lg">${rideDetails.price.toFixed(2)}</span>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+          
+          {/* Right column (wider) */}
+          <div className="lg:col-span-2 space-y-6">
+            {/* AI-Powered Analytics Card - replaces the map */}
+            <RideAnalyticsCard 
+              pickup={rideDetails.from}
+              destination={rideDetails.to}
+              rideType={rideDetails.rideType}
+              fareAmount={rideDetails.price}
+              progress={progress}
+            />
+            
+            <Card className="overflow-hidden">
+              <CardHeader className="bg-gray-50 pb-3">
+                <div className="text-lg font-medium mb-2">Journey Details</div>
+              </CardHeader>
+              
+              <CardContent className="p-0">
+                <Tabs defaultValue={activeTab} onValueChange={setActiveTab}>
+                  <TabsList className="grid grid-cols-3 w-full mx-6 mb-2">
+                    <TabsTrigger value="status" className="text-sm">Status Updates</TabsTrigger>
+                    <TabsTrigger value="weather" className="text-sm">Weather</TabsTrigger>
+                    <TabsTrigger value="insights" className="text-sm">Route Insights</TabsTrigger>
+                  </TabsList>
+                
+                  {/* Status Tab Content */}
+                  <TabsContent value="status">
+                    <div className="p-6">
+                      <div className="mb-5">
+                        <h3 className="text-lg font-medium flex items-center gap-2">
+                          <Clock className="h-5 w-5 text-indigo-600" />
+                          <span>Status Updates</span>
+                        </h3>
+                      </div>
+                      
+                      <div className="space-y-5 relative">
+                        <div className="absolute left-[9px] top-[24px] bottom-0 w-[2px] bg-gray-200"></div>
+                        
+                        <div className="flex gap-3 relative">
+                          <div className={`w-5 h-5 rounded-full ${progress >= 10 ? 'bg-indigo-600' : 'bg-gray-300'} mt-0.5 z-10`}></div>
+                          <div>
+                            <div className="font-medium">Ride Confirmed</div>
+                            <div className="text-sm text-gray-500">Your booking has been confirmed</div>
+                            <div className="text-xs text-gray-400 mt-1">Now</div>
                           </div>
-                          <div className="bg-gray-50 p-2 rounded-md">
-                            <p className="text-xs text-muted-foreground">Duration</p>
-                            <p className="font-medium">{currentRide.route.duration}</p>
+                        </div>
+                        
+                        <div className="flex gap-3 relative">
+                          <div className={`w-5 h-5 rounded-full ${progress >= 33 ? 'bg-indigo-600' : 'bg-gray-300'} mt-0.5 z-10`}></div>
+                          <div>
+                            <div className="font-medium">Driver Arrived</div>
+                            <div className="text-sm text-gray-500">
+                              {progress >= 33 
+                                ? `${rideDetails.driver.name} has arrived at your pickup location` 
+                                : `${rideDetails.driver.name} is on the way to your location`}
+                            </div>
+                            <div className="text-xs text-gray-400 mt-1">
+                              {progress >= 33 ? 'Just now' : getDriverEta()}
+                            </div>
+                          </div>
+                        </div>
+                        
+                        <div className="flex gap-3 relative">
+                          <div className={`w-5 h-5 rounded-full ${progress >= 66 ? 'bg-indigo-600' : 'bg-gray-300'} mt-0.5 z-10`}></div>
+                          <div>
+                            <div className="font-medium">On the Way</div>
+                            <div className="text-sm text-gray-500">
+                              {progress >= 66 
+                                ? "You are on your way to the destination" 
+                                : "Waiting for pickup"}
+                            </div>
+                            <div className="text-xs text-gray-400 mt-1">
+                              {progress >= 66 && progress < 100 
+                                ? `Estimated arrival in ${Math.ceil((100 - progress) / 5)} minutes` 
+                                : progress >= 100 
+                                  ? 'Completed' 
+                                  : 'Waiting for pickup'}
+                            </div>
+                          </div>
+                        </div>
+                        
+                        <div className="flex gap-3 relative">
+                          <div className={`w-5 h-5 rounded-full ${progress >= 100 ? 'bg-green-600' : 'bg-gray-300'} mt-0.5 z-10`}></div>
+                          <div>
+                            <div className="font-medium">Destination Reached</div>
+                            <div className="text-sm text-gray-500">
+                              {progress >= 100 
+                                ? "You have reached your destination" 
+                                : "Waiting to reach destination"}
+                            </div>
+                            <div className="text-xs text-gray-400 mt-1">
+                              {progress >= 100 ? 'Just now' : 'Pending'}
+                            </div>
                           </div>
                         </div>
                       </div>
-                    )}
-
-                    {currentRide.rideType &&
-                      (currentRide.rideType === "green" || currentRide.rideType === "carpool") && (
-                        <div className="mt-4">
-                          <Alert className="bg-green-50 border-green-200">
-                            {currentRide.rideType === "green" ? (
-                              <>
-                                <Leaf className="h-4 w-4 text-green-600" />
-                                <AlertTitle className="text-green-600">Green Ride</AlertTitle>
-                                <AlertDescription className="text-green-700">
-                                  You're saving approximately {currentRide.carbonSaved?.toFixed(2)} kg of CO2 with this
-                                  electric vehicle!
-                                </AlertDescription>
-                              </>
-                            ) : (
-                              <>
-                                <Users className="h-4 w-4 text-indigo-600" />
-                                <AlertTitle className="text-indigo-600">Carpool Ride</AlertTitle>
-                                <AlertDescription className="text-indigo-700">
-                                  By sharing this ride, you're reducing emissions and traffic congestion.
-                                </AlertDescription>
-                              </>
-                            )}
-                          </Alert>
+                      
+                      {/* Additional Status Information */}
+                      {progress >= 33 && progress < 100 && (
+                        <div className="mt-8 bg-indigo-50 p-4 rounded-lg">
+                          <div className="flex items-center gap-2">
+                            <Info className="h-5 w-5 text-indigo-600" />
+                            <span className="font-medium">Journey Status</span>
+                          </div>
+                          <p className="text-sm text-indigo-700 mt-1">
+                            {progress >= 33 && progress < 66 
+                              ? "Your driver has arrived. Please proceed to the pickup location."
+                              : `You are ${Math.ceil((100 - progress) / 5)} minutes away from your destination.`}
+                          </p>
                         </div>
                       )}
-
-                    <div className="mt-6">
-                      <Button className="w-full bg-indigo-600 hover:bg-indigo-700" onClick={() => setShowARView(true)}>
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          width="16"
-                          height="16"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          className="mr-2"
-                        >
-                          <path d="M21 9v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-                          <path d="M9 17v4"></path>
-                          <path d="M15 17v4"></path>
-                          <path d="M9 2v5"></path>
-                          <path d="M15 2v5"></path>
-                        </svg>
-                        View in AR
-                      </Button>
+                      
+                      {progress >= 100 && (
+                        <div className="mt-8 bg-green-50 p-4 rounded-lg">
+                          <div className="flex items-center gap-2">
+                            <Info className="h-5 w-5 text-green-600" />
+                            <span className="font-medium">Ride Completed</span>
+                          </div>
+                          <p className="text-sm text-green-700 mt-1">
+                            You have reached your destination. Thank you for riding with us!
+                          </p>
+                          <Button 
+                            className="mt-3 gap-1 bg-green-600 hover:bg-green-700"
+                            size="sm"
+                            onClick={() => router.push("/rider/book")}
+                          >
+                            <Car className="h-4 w-4" />
+                            <span>Book Another Ride</span>
+                          </Button>
+                        </div>
+                      )}
                     </div>
-                  </CardContent>
-                </Card>
-              </TabsContent>
-
-              <TabsContent value="driver">
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle>Driver Information</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    {currentRide.driver && (
-                      <>
-                        <div className="flex items-center gap-4">
-                          <Avatar className="h-14 w-14">
-                            <AvatarImage src={currentRide.driver.avatar} alt={currentRide.driver.name} />
-                            <AvatarFallback>{currentRide.driver.name.charAt(0)}</AvatarFallback>
-                          </Avatar>
-                          <div>
-                            <h3 className="font-medium">{currentRide.driver.name}</h3>
-                            <div className="flex items-center text-sm text-muted-foreground">
-                              <Star className="h-3 w-3 fill-amber-400 text-amber-400 mr-1" />
-                              <span>{currentRide.driver.rating} • Professional Driver</span>
+                  </TabsContent>
+                  
+                  {/* Weather Tab Content */}
+                  <TabsContent value="weather">
+                    <div className="p-6">
+                      <div className="mb-5">
+                        <h3 className="text-lg font-medium flex items-center gap-2">
+                          <Zap className="h-5 w-5 text-indigo-600" />
+                          <span>Live Weather Updates</span>
+                        </h3>
+                        <p className="text-sm text-gray-500 mt-1">Real-time weather information for your journey</p>
+                      </div>
+                      
+                      {isLoadingInsights ? (
+                        <div className="space-y-4">
+                          <div className="h-4 bg-gray-200 rounded animate-pulse w-3/4"></div>
+                          <div className="h-20 bg-gray-200 rounded animate-pulse"></div>
+                          <div className="h-10 bg-gray-200 rounded animate-pulse"></div>
+                        </div>
+                      ) : weatherInsights ? (
+                        <div className="space-y-4">
+                          <div className="flex justify-between items-center">
+                            <div className="text-2xl font-bold flex items-center gap-2">
+                              {weatherInsights.temperature}
+                              <span className="text-base font-normal text-gray-500">{weatherInsights.condition}</span>
                             </div>
-                            {currentRide.driver.safetyScore && (
-                              <div className="flex items-center mt-1">
-                                <Shield className="h-3 w-3 text-green-600 mr-1" />
-                                <span className="text-xs text-green-600">
-                                  Safety Score: {currentRide.driver.safetyScore}
-                                </span>
-                              </div>
-                            )}
+                          </div>
+                          
+                          <div className="text-sm text-gray-600">
+                            <div className="flex items-center gap-2">
+                              <Umbrella className="h-4 w-4 text-blue-500" />
+                              <span>{weatherInsights.precipitation}</span>
+                            </div>
+                          </div>
+                          
+                          <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 mt-4">
+                            <h4 className="font-medium text-blue-800 mb-1">Recommendation</h4>
+                            <p className="text-sm text-blue-700">{weatherInsights.recommendation}</p>
                           </div>
                         </div>
-
-                        <Separator />
-
-                        <div className="space-y-2">
-                          <div className="flex justify-between text-sm">
-                            <span className="text-muted-foreground">Vehicle</span>
-                            <span className="font-medium">{currentRide.driver.car.model}</span>
+                      ) : (
+                        <div className="text-center py-10">
+                          <p className="text-gray-500">Weather information is not available</p>
+                        </div>
+                      )}
+                    </div>
+                  </TabsContent>
+                  
+                  {/* Route Insights Tab Content */}
+                  <TabsContent value="insights">
+                    <div className="p-6">
+                      <div className="mb-5">
+                        <h3 className="text-lg font-medium flex items-center gap-2">
+                          <MapIcon className="h-5 w-5 text-indigo-600" />
+                          <span>Route Insights</span>
+                        </h3>
+                        <p className="text-sm text-gray-500 mt-1">AI-powered insights about your journey</p>
+                      </div>
+                      
+                      {isLoadingInsights ? (
+                        <div className="space-y-4">
+                          <div className="h-4 bg-gray-200 rounded animate-pulse w-3/4"></div>
+                          <div className="h-20 bg-gray-200 rounded animate-pulse"></div>
+                          <div className="h-10 bg-gray-200 rounded animate-pulse"></div>
+                        </div>
+                      ) : routeInsights ? (
+                        <div className="space-y-6">
+                          {/* Landmarks section */}
+                          <div>
+                            <h4 className="text-sm font-medium mb-2">Notable Landmarks</h4>
+                            <div className="space-y-2">
+                              {routeInsights.landmarks.map((landmark, index) => (
+                                <div key={index} className="flex items-center gap-2 text-sm">
+                                  <MapPin className="h-4 w-4 text-indigo-600" />
+                                  <span>{landmark}</span>
+                                </div>
+                              ))}
+                            </div>
                           </div>
-                          <div className="flex justify-between text-sm">
-                            <span className="text-muted-foreground">Color</span>
-                            <span className="font-medium">{currentRide.driver.car.color}</span>
+                          
+                          {/* Traffic alerts */}
+                          {routeInsights.trafficAlerts.length > 0 && (
+                            <div>
+                              <h4 className="text-sm font-medium mb-2">Traffic Alerts</h4>
+                              {routeInsights.trafficAlerts.map((alert, index) => (
+                                <div key={index} className="flex items-start gap-2 mb-2 bg-amber-50 p-2 rounded-md">
+                                  <AlertTriangle className="h-4 w-4 text-amber-600 mt-0.5" />
+                                  <span className="text-sm text-amber-700">{alert}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          
+                          {/* Weather impact */}
+                          <div>
+                            <h4 className="text-sm font-medium mb-2">Weather Impact</h4>
+                            <div className="text-sm">{routeInsights.weatherImpact}</div>
                           </div>
-                          <div className="flex justify-between text-sm">
-                            <span className="text-muted-foreground">License Plate</span>
-                            <span className="font-medium">{currentRide.driver.car.plate}</span>
-                          </div>
-                          {currentRide.driver.car.isGreen && (
-                            <div className="flex justify-between text-sm">
-                              <span className="text-muted-foreground">Vehicle Type</span>
-                              <span className="font-medium text-green-600 flex items-center">
-                                <Leaf className="h-3 w-3 mr-1" /> Electric
-                              </span>
+                          
+                          {/* Alternative route */}
+                          {routeInsights.alternativeRoute && (
+                            <div className="bg-gray-50 p-3 rounded-md">
+                              <h4 className="text-sm font-medium mb-1 flex items-center gap-1">
+                                <Navigation className="h-4 w-4 text-indigo-600" />
+                                <span>Alternative Route</span>
+                              </h4>
+                              <p className="text-sm">{routeInsights.alternativeRoute.description}</p>
+                              <div className="flex items-center gap-4 mt-2 text-xs">
+                                <span className="flex items-center gap-1">
+                                  <Clock className="h-3 w-3 text-gray-500" />
+                                  {routeInsights.alternativeRoute.timeDifference}
+                                </span>
+                                <span>
+                                  {routeInsights.alternativeRoute.distanceDifference}
+                                </span>
+                              </div>
                             </div>
                           )}
                         </div>
-
-                        <div className="flex gap-2 mt-4">
-                          <Button variant="outline" className="flex-1">
-                            <Phone className="mr-2 h-4 w-4" /> Call
-                          </Button>
-                          <Button variant="outline" className="flex-1">
-                            <MessageSquare className="mr-2 h-4 w-4" /> Message
-                          </Button>
+                      ) : (
+                        <div className="text-center py-10">
+                          <p className="text-gray-500">Route insights are not available</p>
                         </div>
-                      </>
-                    )}
-                  </CardContent>
-                </Card>
-              </TabsContent>
-
-              <TabsContent value="safety">
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle>Safety Assistant</CardTitle>
-                    <CardDescription>AI-powered safety monitoring and assistance</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <SafetyAssistant />
-                  </CardContent>
-                </Card>
-              </TabsContent>
-            </Tabs>
-          </div>
-
-          <Card className="lg:col-span-2">
-            <CardHeader className="pb-2">
-              <div className="flex justify-between items-center">
-                <div>
-                  <CardTitle>Live Tracking</CardTitle>
-                  <CardDescription>
-                    {currentStep === 2 ? (
-                      <>Driver is on the way. ETA: {eta} minutes</>
-                    ) : currentStep === 3 ? (
-                      <>Driver has arrived at pickup location</>
-                    ) : currentStep === 4 ? (
-                      <>En route to destination</>
-                    ) : (
-                      <>Ride completed</>
-                    )}
-                  </CardDescription>
-                </div>
-                {currentStep < 3 && (
-                  <Badge className="bg-indigo-600">
-                    <Car className="mr-1 h-3 w-3" />
-                    {eta > 0 ? `${eta} min away` : "Arriving now"}
-                  </Badge>
-                )}
+                      )}
+                    </div>
+                  </TabsContent>
+                </Tabs>
+              </CardContent>
+            </Card>
+            
+            {progress < 100 && (
+              <div className="flex justify-end mt-4">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1"
+                  onClick={() => {
+                    toast.success("Ride status shared with your contacts");
+                  }}
+                >
+                  <Share2 className="h-4 w-4" />
+                  <span>Share Ride Status</span>
+                </Button>
               </div>
-            </CardHeader>
-            <CardContent className="p-0 h-[500px]">
-              {showARView ? (
-                <ARView currentRide={currentRide} showFullAR={true} onClose={() => setShowARView(false)} />
-              ) : (
-                <EnhancedMap
-                  pickup={currentRide.from}
-                  destination={currentRide.to}
-                  showRoute={true}
-                  showDriver={true}
-                  driverLocation={driverPosition}
-                  currentStep={currentStep}
-                />
-              )}
-            </CardContent>
-          </Card>
+            )}
+          </div>
         </div>
       </div>
     </RiderLayout>

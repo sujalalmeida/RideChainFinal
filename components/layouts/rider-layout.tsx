@@ -55,7 +55,7 @@ export function RiderLayout({ children }: RiderLayoutProps) {
       href: "/rider/safety",
       label: "Safety",
       icon: Shield,
-      active: pathname === "/rider/safety",
+      active: pathname === "/rider/safety" || pathname === "/rider/security",
     },
     {
       href: "/rider/settings",

@@ -58,3 +58,62 @@
   }
 }
 
+/* Animation for route visualization */
+@keyframes drive {
+  0% {
+    top: 10%;
+  }
+  100% {
+    top: 80%;
+  }
+}
+
+.animate-car {
+  animation: drive 3s infinite;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Map container styling */
+.map-container {
+  height: 100%;
+  min-height: 250px;
+  width: 100%;
+  position: relative;
+  z-index: 1;
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+/* Make sure Google Maps takes up the full height of its container */
+.gm-style,
+.gm-style-cc,
+.gm-style > div,
+.gm-style > div > div {
+  height: 100% !important;
+}
+
+/* Map markers styling */
+.map-marker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  color: white;
+  font-weight: bold;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+.pickup-marker {
+  background-color: #4f46e5; /* Indigo for pickup */
+}
+
+.destination-marker {
+  background-color: #10b981; /* Green for destination */
+}
+
+.driver-marker {
+  background-color: #f59e0b; /* Amber for driver */
+}
+

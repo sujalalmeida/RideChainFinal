@@ -1,31 +1,31 @@
 "use client"
 
-import type React from "react"
-
-import { useState } from "react"
+import React, { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Separator } from "@/components/ui/separator"
 import { RiderLayout } from "@/components/layouts/rider-layout"
-import { EnhancedMap } from "@/components/interactive-map/enhanced-map"
-import { Car, CreditCard, Leaf, MapPin, Navigation, Users, Wallet, Star } from "lucide-react"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { useRouter } from "next/navigation"
 import { useAppContext } from "@/contexts/app-context"
-import type { RideType, Location as AppLocation } from "@/contexts/app-context"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Switch } from "@/components/ui/switch"
+import type { RideType, Location as AppLocation, Driver } from "@/contexts/app-context"
 import { Location as MapLocation } from "@/lib/types"
+import { Car, ChevronRight, Clock, CreditCard, Leaf, Loader2, MapPin, Navigation, Wallet, CheckCircle } from "lucide-react"
+import { toast } from "sonner"
+import { LocationSearch } from "@/components/ride-booking/location-search"
+import { RouteVisualization } from "@/components/ride-booking/route-visualization"
+import { VehicleOptionCard } from "@/components/ride-booking/vehicle-option-card"
+import { DriverCard } from "@/components/ride-booking/driver-card"
+import { SmartInsightsCard } from "@/components/ride-booking/smart-insights-card"
+import { estimateRoute, RouteEstimate, getRouteInsights, getWeatherInsights, getRideEfficiencyAnalysis, getSmartTravelTips } from "@/lib/gemini-service"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 export default function BookRidePage() {
   const router = useRouter()
-  const { bookRide, loading, favoriteLocations, communities, user, getCarbonFootprint, getCarbonSaved } =
-    useAppContext()
+  const { bookRide, loading, favoriteLocations, user } = useAppContext()
 
+  // Booking steps: 1 = location selection, 2 = ride options, 3 = driver selection
   const [bookingStep, setBookingStep] = useState(1)
   const [formData, setFormData] = useState({
     pickup: "",
@@ -36,52 +36,85 @@ export default function BookRidePage() {
 
   const [pickupLocation, setPickupLocation] = useState<AppLocation | null>(null)
   const [destinationLocation, setDestinationLocation] = useState<AppLocation | null>(null)
-  const [showCommunityRides, setShowCommunityRides] = useState(false)
-  const [safetyFeatures, setSafetyFeatures] = useState({
-    shareTrip: true,
-    recordAudio: false,
-    emergencyContacts: [],
-  })
+  const [routeInfo, setRouteInfo] = useState<RouteEstimate | null>(null)
+  const [isCalculatingRoute, setIsCalculatingRoute] = useState(false)
+  const [selectedDriver, setSelectedDriver] = useState<Driver | null>(null)
+  const [userPreferences, setUserPreferences] = useState({
+    ecoFriendly: false,
+    costSensitive: true,
+    comfortPreferred: false,
+  });
 
-  // Calculate fare based on ride type
+  // Hardcoded drivers list
+  const availableDrivers: Driver[] = [
+    {
+      id: "1",
+      name: "Alice Johnson",
+      rating: 4.8,
+      avatar: "https://i.pravatar.cc/150?img=1",
+      car: {
+        model: "Toyota Prius",
+        color: "Blue",
+        plate: "ABC 123",
+        isGreen: true,
+      },
+      safetyScore: 98,
+    },
+    {
+      id: "2",
+      name: "Robert Chen",
+      rating: 4.5,
+      avatar: "https://i.pravatar.cc/150?img=2",
+      car: {
+        model: "Honda Civic",
+        color: "Red",
+        plate: "XYZ 789",
+      },
+    },
+    {
+      id: "3",
+      name: "Sophia Williams",
+      rating: 4.9,
+      avatar: "https://i.pravatar.cc/150?img=3",
+      car: {
+        model: "Tesla Model 3",
+        color: "White",
+        plate: "TESLA",
+        isGreen: true,
+      },
+      safetyScore: 99,
+    },
+  ]
+
+  // Calculate fare based on ride type and distance
   const getFare = (rideType: RideType): number => {
-    switch (rideType) {
-      case "standard":
-        return 12.5
-      case "premium":
-        return 18.75
-      case "green":
-        return 14.5
-      case "carpool":
-        return 9.75
-      default:
-        return 12.5
+    // Base prices
+    const basePrices = {
+      standard: 12.5,
+      premium: 18.75,
+      green: 14.5,
+      carpool: 9.75,
     }
+    
+    // If we have route info, adjust fare based on distance
+    if (routeInfo) {
+      // Extract distance in miles (assuming format "X.X miles (Y.Y km)")
+      const distanceMatch = routeInfo.distance.match(/(\d+\.\d+)\s*miles/);
+      const distanceMiles = distanceMatch ? parseFloat(distanceMatch[1]) : 0;
+      
+      // Base fare + distance adjustment
+      return basePrices[rideType] + (distanceMiles * 0.5);
+    }
+    
+    return basePrices[rideType];
   }
 
-  const currentFare = getFare(formData.rideType as RideType)
+  const currentFare = getFare(formData.rideType)
 
-  // Calculate estimated carbon footprint
-  const distance = 2.3 // Mock distance in miles
-  const carbonFootprint = getCarbonFootprint(distance, formData.rideType as RideType)
-  const carbonSaved = getCarbonSaved(distance, formData.rideType as RideType)
-
-  // Calculate fare based on pickup and destination
-  const calculateFare = () => {
-    // This is a placeholder function that would normally calculate fare based on distance
-    // For now, we'll just use the static fare from getFare
-    const fare = getFare(formData.rideType as RideType);
-    console.log("Calculated fare:", fare);
-    // We could update some state here if needed
-  }
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target
-    setFormData((prev) => ({ ...prev, [name]: value }))
-  }
-
-  const handleSelectChange = (name: string, value: string) => {
-    setFormData((prev) => ({ ...prev, [name]: value }))
+  // Calculate ETA for drivers (random for demo)
+  const getDriverETA = (driver: Driver): string => {
+    const minutes = Math.floor(Math.random() * 10) + 1;
+    return `${minutes} min`;
   }
 
   // Convert from Map location to App location
@@ -90,372 +123,604 @@ export default function BookRidePage() {
       lng: location.lng,
       lat: location.lat,
       address: location.address || "Unknown location",
-      name: location.name
+      name: location.name,
     }
   }
 
-  // Handlers for map interaction
-  const handleMapPickupSelect = (location: MapLocation) => {
-    const appLocation = convertToAppLocation(location);
-    handlePickupSelect(appLocation);
-  }
-
-  const handleMapDestinationSelect = (location: MapLocation) => {
-    const appLocation = convertToAppLocation(location);
-    handleDestinationSelect(appLocation);
-  }
-
-  const handlePickupSelect = (location: AppLocation) => {
-    setFormData({
-      ...formData,
-      pickup: location as any
-    });
+  // Handler for location selection
+  const handlePickupSelect = (location: MapLocation) => {
+    const appLocation = convertToAppLocation(location)
+    setPickupLocation(appLocation)
     
-    setPickupLocation(location);
-    
-    // If we have both pickup and destination, calculate fare
-    if (formData.destination) {
-      calculateFare();
+    if (destinationLocation) {
+      calculateRoute(appLocation, destinationLocation);
     }
   }
 
-  const handleDestinationSelect = (location: AppLocation) => {
-    setFormData({
-      ...formData,
-      destination: location as any
-    });
+  const handleDestinationSelect = (location: MapLocation) => {
+    const appLocation = convertToAppLocation(location)
+    setDestinationLocation(appLocation)
     
-    setDestinationLocation(location);
-    
-    // If we have both pickup and destination, calculate fare
-    if (formData.pickup) {
-      calculateFare();
+    if (pickupLocation) {
+      calculateRoute(pickupLocation, appLocation);
     }
   }
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-
-    if (bookingStep === 1) {
-      setBookingStep(2)
-    } else {
-      // Final booking submission
-      try {
-        const pickup = pickupLocation || formData.pickup
-        const destination = destinationLocation || formData.destination
-
-        await bookRide(pickup, destination, formData.rideType as RideType, formData.paymentMethod, { safetyFeatures })
-        router.push("/rider/tracking")
-      } catch (error) {
-        console.error("Error booking ride:", error)
+  
+  // Calculate route using Gemini API and Google Maps
+  const calculateRoute = async (pickup: AppLocation, destination: AppLocation) => {
+    setIsCalculatingRoute(true);
+    
+    try {
+      // Validate locations first
+      if (!pickup.lat || !pickup.lng || !destination.lat || !destination.lng) {
+        toast.error("Invalid location coordinates. Please select valid locations.");
+        console.error("Invalid coordinates:", { pickup, destination });
+        setIsCalculatingRoute(false);
+        return;
       }
+      
+      // Log that we're making the API call
+      console.log("Calculating route between:", {
+        pickup: `${pickup.address} (${pickup.lat},${pickup.lng})`,
+        destination: `${destination.address} (${destination.lat},${destination.lng})`
+      });
+      
+      const mapPickup: MapLocation = {
+        lat: pickup.lat,
+        lng: pickup.lng,
+        address: pickup.address
+      };
+      
+      const mapDestination: MapLocation = {
+        lat: destination.lat,
+        lng: destination.lng,
+        address: destination.address
+      };
+      
+      // Call Gemini API directly
+      try {
+        const geminiRouteInfo = await estimateRoute(mapPickup, mapDestination);
+        
+        if (geminiRouteInfo) {
+          console.log("Gemini API route data:", geminiRouteInfo);
+          setRouteInfo(geminiRouteInfo);
+          
+          // If the calculation was successful, proceed to next step
+          if (bookingStep === 1 && pickup && destination) {
+            setBookingStep(2);
+          }
+          
+          toast.success("Route calculated successfully!");
+        } else {
+          throw new Error("No valid response from Gemini API");
+        }
+      } catch (geminiError) {
+        console.error("Error with Gemini API:", geminiError);
+        
+        // Fallback to default data if Gemini fails
+        toast.error("Could not calculate accurate route. Using estimates.");
+        setRouteInfo({
+          distance: "5.2 miles (8.4 km)",
+          duration: "15 minutes",
+          carbonFootprint: 2.1,
+          trafficLevel: "medium"
+        });
+        
+        // Still proceed to next step with fallback data
+        if (bookingStep === 1) {
+          setBookingStep(2);
+        }
+      }
+    } catch (error: any) {
+      console.error("Error calculating route:", error);
+      
+      // Provide more specific error messages based on the error
+      if (error.message?.includes("API key")) {
+        toast.error("Authentication error with routing API. Please check your API key.");
+      } else if (error.message?.includes("Invalid response") || error.message?.includes("parse")) {
+        toast.error("Received invalid data from routing API. Using default estimates.");
+        // Set fallback data for testing
+        setRouteInfo({
+          distance: "5.2 miles (8.4 km)",
+          duration: "15 minutes",
+          carbonFootprint: 2.1,
+          trafficLevel: "medium"
+        });
+        
+        // Still proceed to next step with fallback data
+        if (bookingStep === 1) {
+          setBookingStep(2);
+        }
+      } else {
+        toast.error("Failed to calculate route. Please try again or enter more specific locations.");
+      }
+    } finally {
+      setIsCalculatingRoute(false);
+    }
+  };
+
+  // Update user preferences to dynamically change based on ride type selection
+  useEffect(() => {
+    if (formData.rideType === "green") {
+      setUserPreferences(prev => ({ ...prev, ecoFriendly: true }));
+    } else if (formData.rideType === "premium") {
+      setUserPreferences(prev => ({ ...prev, comfortPreferred: true, ecoFriendly: false }));
+    } else if (formData.rideType === "carpool") {
+      setUserPreferences(prev => ({ ...prev, costSensitive: true, ecoFriendly: true }));
+    } else if (formData.rideType === "standard") {
+      setUserPreferences(prev => ({ ...prev, costSensitive: true, comfortPreferred: false, ecoFriendly: false }));
+    }
+  }, [formData.rideType]);
+
+  // Handle ride type selection
+  const handleRideTypeSelect = (type: RideType) => {
+    setFormData(prev => ({ ...prev, rideType: type }));
+    // Immediately update user preferences based on selected ride type
+    if (type === "green") {
+      setUserPreferences(prev => ({ ...prev, ecoFriendly: true }));
+    } else if (type === "premium") {
+      setUserPreferences(prev => ({ ...prev, comfortPreferred: true, ecoFriendly: false }));
+    } else if (type === "carpool") {
+      setUserPreferences(prev => ({ ...prev, costSensitive: true, ecoFriendly: true }));
+    } else if (type === "standard") {
+      setUserPreferences(prev => ({ ...prev, costSensitive: true, comfortPreferred: false, ecoFriendly: false }));
+    }
+  };
+  
+  // Handle payment method selection
+  const handlePaymentMethodSelect = (method: string) => {
+    setFormData(prev => ({ ...prev, paymentMethod: method }));
+  };
+
+  // Handle personalized ride type selection from smart insights
+  const handleSmartRideTypeSelection = (rideType: string) => {
+    if (["standard", "premium", "green", "carpool"].includes(rideType as RideType)) {
+      handleRideTypeSelect(rideType as RideType);
+      toast.success(`Selected ${rideType} ride based on AI recommendation`);
+    }
+  };
+
+  // Function to handle booking confirmation after driver selection
+  const confirmRide = async () => {
+    if (!pickupLocation || !destinationLocation || !selectedDriver) {
+      toast.error("Please complete all selections");
+      return;
+    }
+    
+    // Simulate ride booking by creating a ride object
+    const ride = {
+      id: Date.now().toString(),
+      date: new Date().toISOString(),
+      from: pickupLocation,
+      to: destinationLocation,
+      price: currentFare,
+      status: "confirmed",
+      driver: selectedDriver,
+      rideType: formData.rideType,
+      carbonFootprint: routeInfo?.carbonFootprint || 0,
+      carbonSaved: routeInfo?.trafficLevel === "low" ? 1.2 : 0.8,
+      route: {
+        distance: routeInfo?.distance || "Unknown",
+        duration: routeInfo?.duration || "Unknown",
+      },
+      paymentMethod: formData.paymentMethod,
+      routeInfo: routeInfo,
+    }
+    
+    // Store ride details in sessionStorage for access on tracking page
+    try {
+      sessionStorage.setItem('currentRide', JSON.stringify(ride));
+    } catch (e) {
+      console.error("Could not save ride to sessionStorage:", e);
+    }
+    
+    // Call bookRide if available. Otherwise, simulate and route.
+    if (bookRide) {
+      try {
+        await bookRide(ride.from, ride.to, ride.rideType, formData.paymentMethod, { 
+          driver: selectedDriver,
+          route: ride.route,
+          routeInfo: routeInfo
+        });
+        toast.success("Ride booked successfully!");
+        router.push("/rider/tracking");
+      } catch (error) {
+        console.error(error);
+        toast.error("Failed to book ride.");
+      }
+    } else {
+      toast.success("Ride booked successfully!");
+      router.push("/rider/tracking");
     }
   }
-
-  // Find community rides that match the route
-  const matchingCommunityRides = communities.filter((community) =>
-    community.routes?.some(
-      (route) => route.from.address.includes(formData.pickup) || route.to.address.includes(formData.destination),
-    ),
-  )
 
   return (
     <RiderLayout>
-      <div className="flex flex-col gap-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Book a Ride</h1>
-          <p className="text-muted-foreground">Enter your pickup and destination to get started</p>
+      <div className="p-4 max-w-5xl mx-auto">
+        <div className="mb-6">
+          <h1 className="text-3xl font-bold">Book a Ride</h1>
+          <p className="text-muted-foreground mt-1">Enter your trip details to find available rides</p>
+        </div>
+        
+        {/* Progress Steps */}
+        <div className="flex items-center mb-8">
+          <div className={`rounded-full h-10 w-10 flex items-center justify-center ${bookingStep >= 1 ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-500'}`}>
+            1
+          </div>
+          <div className={`h-1 w-12 ${bookingStep > 1 ? 'bg-indigo-600' : 'bg-gray-200'}`}></div>
+          <div className={`rounded-full h-10 w-10 flex items-center justify-center ${bookingStep >= 2 ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-500'}`}>
+            2
+          </div>
+          <div className={`h-1 w-12 ${bookingStep > 2 ? 'bg-indigo-600' : 'bg-gray-200'}`}></div>
+          <div className={`rounded-full h-10 w-10 flex items-center justify-center ${bookingStep >= 3 ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-500'}`}>
+            3
+          </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <Card className="lg:col-span-1">
-            <CardHeader>
-              <CardTitle>Ride Details</CardTitle>
-              <CardDescription>
-                {bookingStep === 1 ? "Enter your route information" : "Select ride options"}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <form onSubmit={handleSubmit} className="space-y-4">
-                {bookingStep === 1 ? (
-                  <>
-                    <Tabs defaultValue="address">
-                      <TabsList className="grid w-full grid-cols-2">
-                        <TabsTrigger value="address">Address</TabsTrigger>
-                        <TabsTrigger value="favorites">Favorites</TabsTrigger>
-                      </TabsList>
-
-                      <TabsContent value="address" className="space-y-4">
-                        <div className="space-y-2">
-                          <Label htmlFor="pickup">Pickup Location</Label>
-                          <div className="relative">
-                            <MapPin className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                            <Input
-                              id="pickup"
-                              name="pickup"
-                              placeholder="Enter pickup address"
-                              className="pl-9"
-                              value={formData.pickup}
-                              onChange={handleChange}
-                              required
-                            />
-                          </div>
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="destination">Destination</Label>
-                          <div className="relative">
-                            <Navigation className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                            <Input
-                              id="destination"
-                              name="destination"
-                              placeholder="Enter destination address"
-                              className="pl-9"
-                              value={formData.destination}
-                              onChange={handleChange}
-                              required
-                            />
-                          </div>
-                        </div>
-                      </TabsContent>
-
-                      <TabsContent value="favorites">
-                        <div className="space-y-4">
-                          <div className="space-y-2">
-                            <Label>Pickup Location</Label>
-                            <Select
-                              onValueChange={(value) => {
-                                const location = favoriteLocations.find((loc) => loc.address === value)
-                                if (location) handlePickupSelect(location)
-                              }}
-                            >
-                              <SelectTrigger>
-                                <SelectValue placeholder="Select saved location" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {favoriteLocations.map((location, index) => (
-                                  <SelectItem key={index} value={location.address}>
-                                    {location.name || location.address}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-
-                          <div className="space-y-2">
-                            <Label>Destination</Label>
-                            <Select
-                              onValueChange={(value) => {
-                                const location = favoriteLocations.find((loc) => loc.address === value)
-                                if (location) handleDestinationSelect(location)
-                              }}
-                            >
-                              <SelectTrigger>
-                                <SelectValue placeholder="Select saved location" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {favoriteLocations.map((location, index) => (
-                                  <SelectItem key={index} value={location.address}>
-                                    {location.name || location.address}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                        </div>
-                      </TabsContent>
-                    </Tabs>
-
-                    {matchingCommunityRides.length > 0 && (
-                      <div className="mt-4">
-                        <div className="flex items-center space-x-2 mb-2">
-                          <Switch
-                            id="community-rides"
-                            checked={showCommunityRides}
-                            onCheckedChange={setShowCommunityRides}
-                          />
-                          <Label htmlFor="community-rides">Show Community Rides</Label>
-                        </div>
-
-                        {showCommunityRides && (
-                          <Alert className="bg-indigo-50 border-indigo-200">
-                            <Users className="h-4 w-4 text-indigo-600" />
-                            <AlertTitle className="text-indigo-600">Community Rides Available</AlertTitle>
-                            <AlertDescription className="text-indigo-700">
-                              {matchingCommunityRides.length} community rides match your route. Save money and reduce
-                              emissions by carpooling!
-                            </AlertDescription>
-                          </Alert>
-                        )}
-                      </div>
-                    )}
-
-                    <Button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 mt-4" disabled={loading}>
-                      {loading ? "Finding Routes..." : "Continue"}
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    <div className="space-y-2">
-                      <Label>Ride Type</Label>
-                      <RadioGroup
-                        defaultValue={formData.rideType}
-                        onValueChange={(value) => handleSelectChange("rideType", value)}
-                        className="grid grid-cols-2 gap-4"
-                      >
-                        <div>
-                          <RadioGroupItem value="standard" id="standard" className="peer sr-only" />
-                          <Label
-                            htmlFor="standard"
-                            className="flex flex-col items-center justify-between rounded-md border-2 border-muted bg-popover p-4 hover:bg-accent hover:text-accent-foreground peer-data-[state=checked]:border-indigo-600 [&:has([data-state=checked])]:border-indigo-600"
-                          >
-                            <Car className="mb-3 h-6 w-6" />
-                            <span className="text-sm font-medium">Standard</span>
-                            <span className="text-xs text-muted-foreground mt-1">4 seats</span>
-                          </Label>
-                        </div>
-                        <div>
-                          <RadioGroupItem value="premium" id="premium" className="peer sr-only" />
-                          <Label
-                            htmlFor="premium"
-                            className="flex flex-col items-center justify-between rounded-md border-2 border-muted bg-popover p-4 hover:bg-accent hover:text-accent-foreground peer-data-[state=checked]:border-indigo-600 [&:has([data-state=checked])]:border-indigo-600"
-                          >
-                            <Car className="mb-3 h-6 w-6" />
-                            <span className="text-sm font-medium">Premium</span>
-                            <span className="text-xs text-muted-foreground mt-1">Luxury, 4 seats</span>
-                          </Label>
-                        </div>
-                        <div>
-                          <RadioGroupItem value="green" id="green" className="peer sr-only" />
-                          <Label
-                            htmlFor="green"
-                            className="flex flex-col items-center justify-between rounded-md border-2 border-muted bg-popover p-4 hover:bg-accent hover:text-accent-foreground peer-data-[state=checked]:border-indigo-600 [&:has([data-state=checked])]:border-indigo-600"
-                          >
-                            <Leaf className="mb-3 h-6 w-6 text-green-600" />
-                            <span className="text-sm font-medium">Green</span>
-                            <span className="text-xs text-muted-foreground mt-1">Electric vehicle</span>
-                          </Label>
-                        </div>
-                        <div>
-                          <RadioGroupItem value="carpool" id="carpool" className="peer sr-only" />
-                          <Label
-                            htmlFor="carpool"
-                            className="flex flex-col items-center justify-between rounded-md border-2 border-muted bg-popover p-4 hover:bg-accent hover:text-accent-foreground peer-data-[state=checked]:border-indigo-600 [&:has([data-state=checked])]:border-indigo-600"
-                          >
-                            <Users className="mb-3 h-6 w-6 text-indigo-600" />
-                            <span className="text-sm font-medium">Carpool</span>
-                            <span className="text-xs text-muted-foreground mt-1">Shared ride, save money</span>
-                          </Label>
-                        </div>
-                      </RadioGroup>
+        {/* Step 1: Location Selection */}
+        {bookingStep === 1 && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Enter Your Route</CardTitle>
+                <CardDescription>Where are you going today?</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <LocationSearch 
+                    type="pickup"
+                    onChange={handlePickupSelect} 
+                    placeholder="Enter pickup location"
+                    value={pickupLocation?.address || ''}
+                  />
+                </div>
+                
+                <div className="space-y-2">
+                  <LocationSearch 
+                    type="destination"
+                    onChange={handleDestinationSelect} 
+                    placeholder="Enter destination"
+                    value={destinationLocation?.address || ''}
+                  />
+                </div>
+                
+                {/* Saved Locations */}
+                {favoriteLocations.length > 0 && (
+                  <div className="mt-4">
+                    <h3 className="text-sm font-medium mb-2">Saved Locations</h3>
+                    <div className="flex flex-wrap gap-2">
+                      {favoriteLocations.map((location, index) => (
+                        <Button
+                          key={index}
+                          variant="outline"
+                          size="sm"
+                          className="flex items-center gap-1"
+                          onClick={() => handlePickupSelect(location as any)}
+                        >
+                          <MapPin className="h-3 w-3" />
+                          {location.name || location.address.split(',')[0]}
+                        </Button>
+                      ))}
                     </div>
-
-                    <div className="space-y-2 mt-4">
-                      <Label htmlFor="payment-method">Payment Method</Label>
-                      <Select
-                        defaultValue={formData.paymentMethod}
-                        onValueChange={(value) => handleSelectChange("paymentMethod", value)}
-                      >
-                        <SelectTrigger id="payment-method">
-                          <SelectValue placeholder="Select payment method" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="card">
-                            <div className="flex items-center">
-                              <CreditCard className="mr-2 h-4 w-4" />
-                              <span>Credit Card (•••• 4242)</span>
-                            </div>
-                          </SelectItem>
-                          <SelectItem value="wallet">
-                            <div className="flex items-center">
-                              <Wallet className="mr-2 h-4 w-4" />
-                              <span>RideChain Wallet</span>
-                            </div>
-                          </SelectItem>
-                          <SelectItem value="cash">
-                            <div className="flex items-center">
-                              <Wallet className="mr-2 h-4 w-4" />
-                              <span>Cash</span>
-                            </div>
-                          </SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    <div className="space-y-2 mt-4">
-                      <Label>Safety Features</Label>
-                      <div className="space-y-2">
-                        <div className="flex items-center space-x-2">
-                          <Switch
-                            id="share-trip"
-                            checked={safetyFeatures.shareTrip}
-                            onCheckedChange={(checked) =>
-                              setSafetyFeatures((prev) => ({ ...prev, shareTrip: checked }))
-                            }
-                          />
-                          <Label htmlFor="share-trip">Share trip status with contacts</Label>
-                        </div>
-                        <div className="flex items-center space-x-2">
-                          <Switch
-                            id="record-audio"
-                            checked={safetyFeatures.recordAudio}
-                            onCheckedChange={(checked) =>
-                              setSafetyFeatures((prev) => ({ ...prev, recordAudio: checked }))
-                            }
-                          />
-                          <Label htmlFor="record-audio">Record audio during trip</Label>
-                        </div>
-                      </div>
-                    </div>
-
-                    <Separator className="my-4" />
-
-                    <div className="space-y-2">
-                      <div className="flex justify-between">
-                        <span className="text-sm">Base fare</span>
-                        <span className="text-sm">${(currentFare * 0.8).toFixed(2)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-sm">Service fee</span>
-                        <span className="text-sm">${(currentFare * 0.2).toFixed(2)}</span>
-                      </div>
-                      <Separator className="my-2" />
-                      <div className="flex justify-between font-medium">
-                        <span>Total</span>
-                        <span>${currentFare.toFixed(2)}</span>
-                      </div>
-                    </div>
-
-                    {(formData.rideType === "green" || formData.rideType === "carpool") && (
-                      <Alert className="mt-4 bg-green-50 border-green-200">
-                        <Leaf className="h-4 w-4 text-green-600" />
-                        <AlertTitle className="text-green-600">Eco-friendly Choice</AlertTitle>
-                        <AlertDescription className="text-green-700">
-                          You'll save approximately {carbonSaved.toFixed(2)} kg of CO2 with this ride option!
-                        </AlertDescription>
-                      </Alert>
-                    )}
-
-                    <Button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 mt-4" disabled={loading}>
-                      {loading ? "Confirming..." : "Confirm Ride"}
-                    </Button>
-                  </>
+                  </div>
                 )}
-              </form>
-            </CardContent>
-          </Card>
-
-          <Card className="lg:col-span-2">
-            <CardContent className="p-0 h-[600px]">
-              <EnhancedMap
-                pickup={pickupLocation || formData.pickup}
-                destination={destinationLocation || formData.destination}
-                showRoute={bookingStep === 2}
-                onPickupSelect={handleMapPickupSelect}
-                onDestinationSelect={handleMapDestinationSelect}
+                
+                <Button 
+                  className="w-full mt-4" 
+                  disabled={!pickupLocation || !destinationLocation || isCalculatingRoute}
+                  onClick={() => {
+                    if (pickupLocation && destinationLocation) {
+                      calculateRoute(pickupLocation, destinationLocation);
+                    } else {
+                      toast.error("Please enter both pickup and destination locations");
+                    }
+                  }}
+                >
+                  {isCalculatingRoute ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Calculating Route...
+                    </>
+                  ) : (
+                    <>Continue to Ride Options</>
+                  )}
+                </Button>
+              </CardContent>
+            </Card>
+            
+            {routeInfo ? (
+              <SmartInsightsCard
+                pickup={pickupLocation}
+                destination={destinationLocation}
+                routeInfo={routeInfo}
+                userPreferences={userPreferences}
+                onRideTypeSelected={handleSmartRideTypeSelection}
               />
-            </CardContent>
-          </Card>
-        </div>
+            ) : (
+              <Card>
+                <CardHeader>
+                  <CardTitle>AI-Powered Recommendations</CardTitle>
+                  <CardDescription>Enter your locations to get personalized ride suggestions</CardDescription>
+                </CardHeader>
+                <CardContent className="text-center py-10">
+                  <div className="mb-6 text-gray-400">
+                    <Navigation className="h-16 w-16 mx-auto mb-4" />
+                    <p>Select your pickup and destination locations to receive AI-powered recommendations and insights powered by Gemini.</p>
+                  </div>
+                  
+                  <div className="space-y-2 text-sm text-gray-500">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle className="h-4 w-4 text-green-600" />
+                      <span>Smart route optimization</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <CheckCircle className="h-4 w-4 text-green-600" />
+                      <span>Weather impacts on your journey</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <CheckCircle className="h-4 w-4 text-green-600" />
+                      <span>Personalized ride recommendations</span>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        )}
+        
+        {/* Step 2: Ride Options */}
+        {bookingStep === 2 && (
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+            {/* Left column (2/5 width) */}
+            <div className="lg:col-span-2 space-y-6">
+              <SmartInsightsCard
+                pickup={pickupLocation}
+                destination={destinationLocation}
+                routeInfo={routeInfo}
+                userPreferences={userPreferences}
+                onRideTypeSelected={handleSmartRideTypeSelection}
+              />
+            </div>
+            
+            {/* Right column (3/5 width) */}
+            <div className="lg:col-span-3">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Select Ride Options</CardTitle>
+                  <CardDescription>Choose your ride type and payment method</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  <div>
+                    <h3 className="text-sm font-medium mb-3">Ride Type</h3>
+                    <div className="space-y-3">
+                      <VehicleOptionCard 
+                        type="standard"
+                        title="Standard"
+                        description="Affordable, everyday ride"
+                        price={getFare("standard")}
+                        eta="2 min away"
+                        isSelected={formData.rideType === "standard"}
+                        onSelect={() => handleRideTypeSelect("standard")}
+                      />
+                      
+                      <VehicleOptionCard 
+                        type="premium"
+                        title="Premium"
+                        description="Luxury vehicles, top-rated drivers"
+                        price={getFare("premium")}
+                        eta="4 min away"
+                        isSelected={formData.rideType === "premium"}
+                        onSelect={() => handleRideTypeSelect("premium")}
+                      />
+                      
+                      <VehicleOptionCard 
+                        type="green"
+                        title="Green"
+                        description="Electric & hybrid vehicles only"
+                        price={getFare("green")}
+                        eta="3 min away"
+                        isSelected={formData.rideType === "green"}
+                        onSelect={() => handleRideTypeSelect("green")}
+                      />
+                      
+                      <VehicleOptionCard 
+                        type="carpool"
+                        title="Carpool"
+                        description="Share your ride, save money"
+                        price={getFare("carpool")}
+                        eta="5 min away"
+                        isSelected={formData.rideType === "carpool"}
+                        onSelect={() => handleRideTypeSelect("carpool")}
+                      />
+                    </div>
+                  </div>
+                  
+                  <Separator />
+                  
+                  <div>
+                    <h3 className="text-sm font-medium mb-3">Payment Method</h3>
+                    <Select
+                      defaultValue={formData.paymentMethod}
+                      onValueChange={(value) => handlePaymentMethodSelect(value)}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select payment method" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="card">
+                          <div className="flex items-center">
+                            <CreditCard className="mr-2 h-4 w-4" />
+                            <span>Credit Card (•••• 4242)</span>
+                          </div>
+                        </SelectItem>
+                        <SelectItem value="wallet">
+                          <div className="flex items-center">
+                            <Wallet className="mr-2 h-4 w-4" />
+                            <span>RideChain Wallet ($25.40)</span>
+                          </div>
+                        </SelectItem>
+                        <SelectItem value="cash">
+                          <div className="flex items-center">
+                            <Wallet className="mr-2 h-4 w-4" />
+                            <span>Cash</span>
+                          </div>
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  
+                  <Separator />
+                  
+                  <div className="space-y-2">
+                    <div className="flex justify-between">
+                      <span className="text-sm">Base fare</span>
+                      <span className="text-sm">${(currentFare * 0.8).toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-sm">Service fee</span>
+                      <span className="text-sm">${(currentFare * 0.2).toFixed(2)}</span>
+                    </div>
+                    <Separator className="my-2" />
+                    <div className="flex justify-between font-medium">
+                      <span>Total</span>
+                      <span>${currentFare.toFixed(2)}</span>
+                    </div>
+                  </div>
+                  
+                  <div className="flex gap-3 mt-6">
+                    <Button 
+                      variant="outline" 
+                      onClick={() => setBookingStep(1)}
+                    >
+                      Back
+                    </Button>
+                    
+                    <Button 
+                      className="flex-1"
+                      onClick={() => setBookingStep(3)}
+                    >
+                      Continue to Driver Selection
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        )}
+        
+        {/* Step 3: Driver Selection */}
+        {bookingStep === 3 && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-1 space-y-6">
+              <RouteVisualization 
+                pickup={pickupLocation}
+                destination={destinationLocation}
+                routeInfo={routeInfo}
+              />
+              
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle>Ride Summary</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="flex justify-between items-center">
+                    <div className="flex items-center">
+                      <Car className="h-4 w-4 mr-2 text-indigo-600" />
+                      <span>{formData.rideType.charAt(0).toUpperCase() + formData.rideType.slice(1)}</span>
+                    </div>
+                    <span className="text-sm">${currentFare.toFixed(2)}</span>
+                  </div>
+                  
+                  <div className="flex justify-between items-center">
+                    <div className="flex items-center">
+                      <Clock className="h-4 w-4 mr-2 text-indigo-600" />
+                      <span>Duration</span>
+                    </div>
+                    <span className="text-sm">{routeInfo?.duration || "Unknown"}</span>
+                  </div>
+                  
+                  <div className="flex justify-between items-center">
+                    <div className="flex items-center">
+                      <CreditCard className="h-4 w-4 mr-2 text-indigo-600" />
+                      <span>Payment</span>
+                    </div>
+                    <span className="text-sm capitalize">{formData.paymentMethod}</span>
+                  </div>
+                  
+                  {(formData.rideType === "green" || formData.rideType === "carpool") && (
+                    <Alert className="mt-2 bg-green-50 border-green-200">
+                      <Leaf className="h-4 w-4 text-green-600" />
+                      <AlertTitle className="text-green-600">Eco-friendly Choice</AlertTitle>
+                      <AlertDescription className="text-green-700 text-xs">
+                        You're saving approximately {routeInfo?.carbonFootprint * 0.4} kg of CO2 with this ride option!
+                      </AlertDescription>
+                    </Alert>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+            
+            <div className="lg:col-span-2">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Select a Driver</CardTitle>
+                  <CardDescription>
+                    {selectedDriver 
+                      ? `${selectedDriver.name} will be your driver` 
+                      : "Choose who will drive you to your destination"
+                    }
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+                    {availableDrivers
+                      // Filter drivers based on ride type
+                      .filter(driver => {
+                        if (formData.rideType === "green") {
+                          return !!driver.car.isGreen;
+                        }
+                        return true;
+                      })
+                      .map(driver => (
+                        <DriverCard
+                          key={driver.id}
+                          driver={driver}
+                          isSelected={selectedDriver?.id === driver.id}
+                          onSelect={() => setSelectedDriver(driver)}
+                          estimatedArrival={getDriverETA(driver)}
+                        />
+                      ))
+                    }
+                  </div>
+                  
+                  <div className="flex gap-3 mt-6">
+                    <Button 
+                      variant="outline" 
+                      onClick={() => setBookingStep(2)}
+                    >
+                      Back
+                    </Button>
+                    
+                    <Button 
+                      className="flex-1"
+                      disabled={!selectedDriver || loading}
+                      onClick={confirmRide}
+                    >
+                      {loading ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Confirming...
+                        </>
+                      ) : (
+                        <>Confirm Ride</>
+                      )}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        )}
       </div>
     </RiderLayout>
   )
